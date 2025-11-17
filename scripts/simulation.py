@@ -25,13 +25,20 @@ DIV_LENGTH_JITTER = 0.6    # random jitter added to target length
 
 MAX_CELLS = 20000
 
-# RGB colors for rendering in GUI
-COL_SA = [1.0,0,0]  # green
-COL_PA = [0,0,1.0]  # blue
-COL_DEAD = [0.6, 0.6, 0.6]
+# Global crowding (simple logistic-like saturation)
+# Keep capacity equal to your original MAX_CELLS so early dynamics are unchanged
+CARRYING_CAPACITY = MAX_CELLS
 
-# Killing parameters (NEW)
-KILL_RADIUS = 2.0   # microns; PA kills SA within this distance
+# RGB colors for rendering in GUI
+COL_SA   = [0.0, 1.0, 0.0]  # SA = green
+COL_PA   = [0.0, 0.0, 1.0]  # PA = blue
+COL_DEAD = [0.6, 0.6, 0.6]  # dead = gray
+
+# Killing parameters
+# Introduce effective radii for SA and PA whose sum equals your original KILL_RADIUS = 2.0
+EFFECTIVE_RADIUS_SA = 1.0
+EFFECTIVE_RADIUS_PA = 1.0
+KILL_RADIUS = EFFECTIVE_RADIUS_SA + EFFECTIVE_RADIUS_PA   # numerically still 2.0
 KILL_RADIUS_SQ = KILL_RADIUS * KILL_RADIUS
 
 # Grid size for spatial hashing (>= kill radius)
@@ -42,6 +49,10 @@ CONTACT_KILLING = True
 PRINT_EVERY = 100   # print every 100 steps (tune as you like)
 STEP_COUNTER = 0
 DEAD_LIFETIME = 20   # number of steps after which a dead cell is removed
+
+# Precomputed neighbor offsets for 3x3 grid neighborhood
+NEIGHBOR_OFFSETS = [(dxg, dyg) for dxg in (-1, 0, 1) for dyg in (-1, 0, 1)]
+
 
 def grid_index(x, y):
     """Map (x, y) to integer grid coordinates."""
@@ -72,13 +83,15 @@ def setup(sim):
         x = (rng.random()*2 - 1) * INIT_SPREAD
         y = (rng.random()*2 - 1) * INIT_SPREAD
         # cellType=0 => SA
-        sim.addCell(cellType=0, pos=(x, y, 0), dir=((rng.random()*2-1), (rng.random()*2-1), 0))
+        sim.addCell(cellType=0, pos=(x, y, 0),
+                    dir=((rng.random()*2-1), (rng.random()*2-1), 0))
 
     for _ in range(N_PA_START):
         x = (rng.random()*2 - 1) * (INIT_SPREAD/2)
         y = (rng.random()*2 - 1) * (INIT_SPREAD/2)
         # cellType=1 => PA
-        sim.addCell(cellType=1, pos=(x, y, 0), dir=((rng.random()*2-1), (rng.random()*2-1), 0))
+        sim.addCell(cellType=1, pos=(x, y, 0),
+                    dir=((rng.random()*2-1), (rng.random()*2-1), 0))
 
     # Add a 3D renderer to visualize in the GUI
     if sim.is_gui:
@@ -90,21 +103,20 @@ def setup(sim):
 
 def init(cell):
     """Called once when a new cell is created/added."""
+    ctype = cell.cellType
+
     # Assign base growth rate by species
-    if cell.cellType == 0:  # SA
+    if ctype == 0:  # SA
         cell.growthRate = SA_MU
         cell.color = COL_SA
-        cell.targetVol = DIV_LENGTH_MEAN_SA + random.uniform(0.0, 0.15) 
-    elif cell.cellType == 1:  # PA
+        cell.targetVol = DIV_LENGTH_MEAN_SA + random.uniform(0.0, 0.15)
+    elif ctype == 1:  # PA
         cell.growthRate = PA_MU
         cell.color = COL_PA
         cell.targetVol = DIV_LENGTH_MEAN_PA + random.uniform(0.0, 0.5)
-    else: # dead cell
+    else:  # dead cell
         cell.growthRate = 0.0
         cell.color = [0.6, 0.6, 0.6]
-
-    # Target length before division (introduce some variability)
-    # cell.targetVol = DIV_LENGTH_MEAN + (random.random()-0.5)*DIV_LENGTH_JITTER
 
     # Reset flags
     cell.divideFlag = False
@@ -117,12 +129,21 @@ def update(cells):
 
     cells_to_remove = []
 
+    # Global crowding factor (logistic-like slowdown)
+    n_cells = len(cells)
+    if CARRYING_CAPACITY > 0:
+        crowd_factor = max(0.0, 1.0 - float(n_cells) / CARRYING_CAPACITY)
+    else:
+        crowd_factor = 1.0
+
     # ------------------------------------------------------
     # Branch 1: no contact killing, just growth/division
     # ------------------------------------------------------
     if not CONTACT_KILLING:
         for cid, c in cells.items():
-            if c.cellType == 2:  # dead
+            ctype = c.cellType
+
+            if ctype == 2:  # dead
                 c.growthRate = 0.0
                 c.divideFlag = False
                 c.color = COL_DEAD
@@ -132,13 +153,13 @@ def update(cells):
                 if c.deadCounter >= DEAD_LIFETIME:
                     cells_to_remove.append(cid)
 
-            elif c.cellType == 0:  # SA
-                c.growthRate = SA_MU
+            elif ctype == 0:  # SA
+                c.growthRate = SA_MU * crowd_factor
                 c.divideFlag = (c.volume > c.targetVol)
                 c.deadCounter = 0
 
-            elif c.cellType == 1:  # PA
-                c.growthRate = PA_MU
+            elif ctype == 1:  # PA
+                c.growthRate = PA_MU * crowd_factor
                 c.divideFlag = (c.volume > c.targetVol)
                 c.deadCounter = 0
 
@@ -150,11 +171,12 @@ def update(cells):
         if STEP_COUNTER % PRINT_EVERY == 0:
             n_sa = n_pa = n_dead = 0
             for c in cells.values():
-                if c.cellType == 0:
+                ctype = c.cellType
+                if ctype == 0:
                     n_sa += 1
-                elif c.cellType == 1:
+                elif ctype == 1:
                     n_pa += 1
-                elif c.cellType == 2:
+                elif ctype == 2:
                     n_dead += 1
             total = len(cells)
             print(f"[step {STEP_COUNTER}] SA={n_sa}, PA={n_pa}, dead={n_dead}, total={total}")
@@ -170,21 +192,23 @@ def update(cells):
 
     # First pass: classify cells, update deadCounter & schedule deletions
     for cid, c in cells.items():
-        if c.cellType == 1:  # PA
+        ctype = c.cellType
+
+        if ctype == 1:  # PA
             x, y, z = c.pos
             gx, gy = grid_index(x, y)
             pa_grid.setdefault((gx, gy), []).append((x, y, cid))
 
-            c.growthRate = PA_MU
+            c.growthRate = PA_MU * crowd_factor
             c.divideFlag = (c.volume > c.targetVol)
             c.deadCounter = 0
 
-        elif c.cellType == 0:  # SA
+        elif ctype == 0:  # SA
             sa_ids.append(cid)
             # growth / division will be set after we know if it's killed
             c.deadCounter = 0
 
-        elif c.cellType == 2:  # dead
+        elif ctype == 2:  # dead
             c.growthRate = 0.0
             c.divideFlag = False
             c.color = COL_DEAD
@@ -194,39 +218,42 @@ def update(cells):
                 cells_to_remove.append(cid)
 
     # Handle SA cells: check nearby PA in grid
+    kill_radius_sq_local = KILL_RADIUS_SQ  # local binding
     for cid in sa_ids:
         c = cells[cid]
         x0, y0, z0 = c.pos
         gx0, gy0 = grid_index(x0, y0)
 
         killed = False
-        for dxg in (-1, 0, 1):
+        x0_local = x0
+        y0_local = y0
+
+        # Use precomputed neighbor offsets
+        for dxg, dyg in NEIGHBOR_OFFSETS:
             if killed:
                 break
-            for dyg in (-1, 0, 1):
-                cell_list = pa_grid.get((gx0 + dxg, gy0 + dyg))
-                if not cell_list:
-                    continue
 
-                for xp, yp, pa_id in cell_list:
-                    dx = x0 - xp
-                    dy = y0 - yp
-                    if dx*dx + dy*dy <= KILL_RADIUS_SQ:
-                        # kill SA -> becomes dead cellType 2
-                        c.cellType = 2
-                        c.growthRate = 0.0
-                        c.divideFlag = False
-                        c.color = COL_DEAD
-                        c.deadCounter = 0  # start counting from now
-                        killed = True
-                        break
+            cell_list = pa_grid.get((gx0 + dxg, gy0 + dyg))
+            if not cell_list:
+                continue
+
+            for xp, yp, pa_id in cell_list:
+                dx = x0_local - xp
+                dy = y0_local - yp
+                if dx*dx + dy*dy <= kill_radius_sq_local:
+                    # kill SA -> becomes dead cellType 2
+                    c.cellType = 2
+                    c.growthRate = 0.0
+                    c.divideFlag = False
+                    c.color = COL_DEAD
+                    c.deadCounter = 0  # start counting from now
+                    killed = True
+                    break
 
         if not killed:
             # still alive SA
-            c.growthRate = SA_MU
+            c.growthRate = SA_MU * crowd_factor
             c.divideFlag = (c.volume > c.targetVol)
-
-    # PA cells already had growthRate/divideFlag set in first pass
 
     # Remove dead cells (both old dead and those that aged out this step)
     for cid in cells_to_remove:
@@ -236,31 +263,31 @@ def update(cells):
     if STEP_COUNTER % PRINT_EVERY == 0:
         n_sa = n_pa = n_dead = 0
         for c in cells.values():
-            if c.cellType == 0:
+            ctype = c.cellType
+            if ctype == 0:
                 n_sa += 1
-            elif c.cellType == 1:
+            elif ctype == 1:
                 n_pa += 1
-            elif c.cellType == 2:
+            elif ctype == 2:
                 n_dead += 1
         total = len(cells)
         print(f"!!!!![step {STEP_COUNTER}] SA={n_sa}, PA={n_pa}, dead={n_dead}, total={total}")
 
 
-
-
 def divide(parent, d1, d2):
     """Called when a cell divides; set properties of daughters."""
     # Keep the same species after division
-    d1.cellType = parent.cellType
-    d2.cellType = parent.cellType
+    ptype = parent.cellType
+    d1.cellType = ptype
+    d2.cellType = ptype
 
     # Inherit color and growth rate by species
-    if parent.cellType == 0:
+    if ptype == 0:
         for d in (d1, d2):
             d.color = COL_SA
             d.growthRate = SA_MU
             d.targetVol = DIV_LENGTH_MEAN_SA + random.uniform(0.0, 0.15)
-    elif parent.cellType == 1:
+    elif ptype == 1:
         for d in (d1, d2):
             d.color = COL_PA
             d.growthRate = PA_MU

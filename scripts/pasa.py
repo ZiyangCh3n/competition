@@ -40,7 +40,7 @@ def setup(sim):
         jitter_z=False,
         max_cells=MAX_CELLS,
         max_planes=3,
-        gamma=50.0,
+        gamma=10.0,
     )
 
     # Regulation (we implement simple growth rules below)
