@@ -1,6 +1,6 @@
 # Two-species growth in CellModeller with PA killing SA
 # Species 0 ("SA") grows faster; Species 1 ("PA") grows slower.
-# Contact-dependent killing + optional diffusive toxin killing using GridDiffusion.
+# Killing is via diffusive toxin using GridDiffusion (no contact killing).
 #
 # Run with:
 #   python CellModeller/Scripts/CellModellerGUI.py /path/to/this_script.py
@@ -34,23 +34,9 @@ MAX_CELLS = 10000
 CARRYING_CAPACITY = MAX_CELLS  # use same scale as your max cells
 
 # RGB colors for rendering in GUI
-COL_SA   = [0, 1.0, 0]   # SA
-COL_PA   = [0, 0, 1.0] # PA
+COL_SA   = [0, 1.0, 0]     # SA
+COL_PA   = [0, 0, 1.0]     # PA
 COL_DEAD = [0.6, 0.6, 0.6]
-
-# Contact-killing parameters
-# Original KILL_RADIUS was 2.0 -> use two radii that sum to 2
-EFFECTIVE_RADIUS_SA = 1.0
-EFFECTIVE_RADIUS_PA = 1.0
-KILL_RADIUS = EFFECTIVE_RADIUS_SA + EFFECTIVE_RADIUS_PA   # = 2.0
-KILL_RADIUS_SQ = KILL_RADIUS * KILL_RADIUS
-
-# Grid size for spatial hashing (>= kill radius)
-GRID_SIZE = KILL_RADIUS
-
-# Killing method toggles
-CONTACT_KILLING   = False   # PA kills SA by direct contact
-DIFFUSIVE_KILLING = True  # PA secretes diffusive toxin that kills SA
 
 PRINT_EVERY   = 100   # print every 100 steps
 STEP_COUNTER  = 0
@@ -59,19 +45,20 @@ DEAD_LIFETIME = 20    # number of steps after which a dead cell is removed
 # Diffusive toxin parameters (for GridDiffusion-based killing)
 # One species + one signal: toxin_in (species[0]) and toxin_out (signals[0])
 TOXIN_DIFF_RATE        = 50.0  # diffusion coefficient on grid (arbitrary)
-TOXIN_MEMBRANE_DIFF    = 10.0   # in/out of cell
+TOXIN_MEMBRANE_DIFF    = 10.0  # in/out of cell
 TOXIN_PROD_RATE_PA     = 1.0   # production rate in PA cells
-TOXIN_KILL_THRESHOLD   = 0.5   # SA dies if intracellular toxin > this
+TOXIN_KILL_THRESHOLD   = 0.5   # SA dies if toxin >= this
 
-# Precomputed neighbor offsets for 3x3 grid neighborhood (for PA spatial hash)
-NEIGHBOR_OFFSETS = [(dxg, dyg) for dxg in (-1, 0, 1) for dyg in (-1, 0, 1)]
+# Killing toggle (now only diffusive; contact killing removed)
+DIFFUSIVE_KILLING = False
+
 
 def toxin_to_color(cell):
     """
-    Return an [R,G,B] color for a cell based on its intracellular toxin level.
-    - Uses species[0] (toxin_in).
-    - Low toxin: normal species color.
-    - High toxin: fades to white.
+    Return an [R,G,B] color for a cell based on its toxin level.
+    Uses signals[0] (extracellular toxin at cell position).
+    Low toxin: normal species color.
+    High toxin: fades to white.
     """
     # Dead cells keep their dead color
     if cell.cellType == 2:
@@ -86,7 +73,6 @@ def toxin_to_color(cell):
         base = [0.5, 0.5, 0.5]
 
     if DIFFUSIVE_KILLING:
-        # tox = float(cell.species[0])  # intracellular toxin
         tox = float(cell.signals[0])   # extracellular toxin signal for this cell
         # Normalize to kill threshold: 0 → no toxin, 1 → at kill threshold
         norm = min(tox / TOXIN_KILL_THRESHOLD, 1.0)
@@ -98,12 +84,6 @@ def toxin_to_color(cell):
     else:
         # No diffusive killing: just use base species color
         return base
-
-
-
-def grid_index(x, y):
-    """Map (x, y) to integer grid coordinates for spatial hashing."""
-    return (int(np.floor(x / GRID_SIZE)), int(np.floor(y / GRID_SIZE)))
 
 
 # -----------------------------
@@ -167,7 +147,7 @@ def setup(sim):
     # ---- Signalling: GridDiffusion for diffusive toxin ----
     # Grid big enough so your colony at ~0,0 (±25) sits well inside.
     grid_dim  = (40, 40, 8)         # number of grid points in x,y,z
-    grid_size = (8.0, 8.0, 8.0)     # spacing between grid points
+    grid_size = (8.0, 8.0, 8.0)     # spacing between grid points (must be equal)
     grid_orig = (-160., -160., -16.)
     n_signals = 1                   # just toxin
     n_species = 1                   # intracellular toxin
@@ -199,7 +179,7 @@ def setup(sim):
             dir=((rng.random()*2 - 1), (rng.random()*2 - 1), 0),
         )
 
-    # Add a 3D renderer to visualize in the GUI
+    # Add renderers
     if sim.is_gui:
         sim.addRenderer(Renderers.GLBacteriumRenderer(sim))
         sim.addRenderer(Renderers.GLGridRenderer(sig, integ))
@@ -247,7 +227,7 @@ def update(cells):
     # ------------------------------------------------------
     # Branch 1: no killing at all, just growth/division
     # ------------------------------------------------------
-    if not CONTACT_KILLING and not DIFFUSIVE_KILLING:
+    if not DIFFUSIVE_KILLING:
         for cid, c in cells.items():
             ctype = c.cellType
 
@@ -270,6 +250,7 @@ def update(cells):
                 c.growthRate = PA_MU * crowd_factor
                 c.divideFlag = (c.volume > c.targetVol)
                 c.deadCounter = 0
+                # You can also visualize PA toxin with:
                 # c.color = toxin_to_color(c)
 
         for cid in cells_to_remove:
@@ -290,34 +271,12 @@ def update(cells):
         return
 
     # ------------------------------------------------------
-    # Branch 2: at least one killing mechanism is ON
-    #  - build PA spatial grid
-    #  - first handle PA & dead
-    #  - then for each SA: diffusive toxin check, then contact killing
+    # Branch 2: diffusive killing ON (no contact killing)
     # ------------------------------------------------------
-
-    pa_grid = {}   # (gx, gy) -> list of (xp, yp, cid)
-    sa_ids  = []
-
-    for cid, c in cells.items():
+    for cid, c in list(cells.items()):
         ctype = c.cellType
 
-        if ctype == 1:  # PA
-            x, y, z = c.pos
-            gx, gy = grid_index(x, y)
-            pa_grid.setdefault((gx, gy), []).append((x, y, cid))
-
-            c.growthRate = PA_MU * crowd_factor
-            c.divideFlag = (c.volume > c.targetVol)
-            c.deadCounter = 0
-            # c.color = toxin_to_color(c)
-
-        elif ctype == 0:  # SA
-            sa_ids.append(cid)
-            # growth/division set after kill checks
-            c.deadCounter = 0
-
-        elif ctype == 2:  # dead
+        if ctype == 2:  # dead
             c.growthRate = 0.0
             c.divideFlag = False
             c.color = COL_DEAD
@@ -326,22 +285,12 @@ def update(cells):
             if c.deadCounter >= DEAD_LIFETIME:
                 cells_to_remove.append(cid)
 
-    kill_radius_sq_local = KILL_RADIUS_SQ
+        elif ctype == 0:  # SA
+            killed = False
 
-    # SA handling: diffusive toxin, then contact killing
-    for cid in sa_ids:
-        c = cells[cid]
-        x0, y0, z0 = c.pos
-        gx0, gy0 = grid_index(x0, y0)
-
-        killed = False
-
-        # 1) Diffusive toxin killing using intracellular species concentration
-        if DIFFUSIVE_KILLING:
-            # tox_in = c.species[0]  # intracellular toxin species
-            tox_out = c.signals[0]   # extracellular toxin signal for this cell
-            tox_in = tox_out
-            if tox_in >= TOXIN_KILL_THRESHOLD:
+            # Diffusive toxin killing using extracellular toxin
+            tox_out = c.signals[0]
+            if tox_out >= TOXIN_KILL_THRESHOLD:
                 c.cellType = 2
                 c.growthRate = 0.0
                 c.divideFlag = False
@@ -349,35 +298,17 @@ def update(cells):
                 c.deadCounter = 0
                 killed = True
 
-        # 2) Contact killing (if not already dead from toxin)
-        if CONTACT_KILLING and not killed:
-            x0_local = x0
-            y0_local = y0
+            if not killed:
+                c.growthRate = SA_MU * crowd_factor
+                c.divideFlag = (c.volume > c.targetVol)
+                c.color = toxin_to_color(c)
 
-            for dxg, dyg in NEIGHBOR_OFFSETS:
-                cell_list = pa_grid.get((gx0 + dxg, gy0 + dyg))
-                if not cell_list:
-                    continue
-
-                for xp, yp, pa_id in cell_list:
-                    dx = x0_local - xp
-                    dy = y0_local - yp
-                    if dx*dx + dy*dy <= kill_radius_sq_local:
-                        c.cellType = 2
-                        c.growthRate = 0.0
-                        c.divideFlag = False
-                        c.color = COL_DEAD
-                        c.deadCounter = 0
-                        killed = True
-                        break
-                if killed:
-                    break
-
-        # 3) If still alive SA, grow/divide with crowding
-        if not killed:
-            c.growthRate = SA_MU * crowd_factor
+        elif ctype == 1:  # PA
+            c.growthRate = PA_MU * crowd_factor
             c.divideFlag = (c.volume > c.targetVol)
-            c.color = toxin_to_color(c)
+            c.deadCounter = 0
+            # Optional: color PA by toxin, too:
+            # c.color = toxin_to_color(c)
 
     # Remove dead cells that have aged out
     for cid in cells_to_remove:
@@ -394,11 +325,12 @@ def update(cells):
                 n_dead += 1
         total = len(cells)
         print(f"!!!!![step {STEP_COUNTER}] SA={n_sa}, PA={n_pa}, dead={n_dead}, total={total}")
-    
+
     if STEP_COUNTER % PRINT_EVERY == 0 and DIFFUSIVE_KILLING:
         max_tox_sa = max(c.species[0] for c in cells.values() if c.cellType == 0)
         max_tox_pa = max(c.species[0] for c in cells.values() if c.cellType == 1)
         print(f"[step {STEP_COUNTER}] max SA toxin_in = {max_tox_sa:.2f}, max PA toxin_in = {max_tox_pa:.2f}")
+
 
 def divide(parent, d1, d2):
     """Called when a cell divides; set properties of daughters."""
