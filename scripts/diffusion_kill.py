@@ -1,6 +1,7 @@
 # Two-species growth in CellModeller with PA killing SA
 # Species 0 ("SA") grows faster; Species 1 ("PA") grows slower.
 # Killing is via diffusive toxin using GridDiffusion (no contact killing).
+# PA also secretes a second diffusive molecule that inhibits SA growth rate.
 #
 # Run with:
 #   python CellModeller/Scripts/CellModellerGUI.py /path/to/this_script.py
@@ -15,7 +16,7 @@ from CellModeller.Signalling.GridDiffusion import GridDiffusion
 from CellModeller.Integration.CLCrankNicIntegrator import CLCrankNicIntegrator
 
 # -----------------------------
-# Tunable parameters (your originals)
+# Tunable parameters
 # -----------------------------
 N_SA_START = 3
 N_PA_START = 1
@@ -34,95 +35,171 @@ MAX_CELLS = 10000
 CARRYING_CAPACITY = MAX_CELLS  # use same scale as your max cells
 
 # RGB colors for rendering in GUI
-COL_SA   = [0, 1.0, 0]     # SA
-COL_PA   = [0, 0, 1.0]     # PA
+COL_SA   = [0, 1.0, 0]     # SA = green
+COL_PA   = [0, 0, 1.0]     # PA = blue
 COL_DEAD = [0.6, 0.6, 0.6]
 
 PRINT_EVERY   = 100   # print every 100 steps
 STEP_COUNTER  = 0
 DEAD_LIFETIME = 20    # number of steps after which a dead cell is removed
 
-# Diffusive toxin parameters (for GridDiffusion-based killing)
-# One species + one signal: toxin_in (species[0]) and toxin_out (signals[0])
+# --------------------------------------------------
+# Diffusive toxin parameters (signal 0, species 0)
+# --------------------------------------------------
 TOXIN_DIFF_RATE        = 50.0  # diffusion coefficient on grid (arbitrary)
 TOXIN_MEMBRANE_DIFF    = 10.0  # in/out of cell
 TOXIN_PROD_RATE_PA     = 1.0   # production rate in PA cells
-TOXIN_KILL_THRESHOLD   = 0.5   # SA dies if toxin >= this
+TOXIN_KILL_THRESHOLD   = 0.5   # SA dies if extracellular toxin >= this
 
 # Killing toggle (now only diffusive; contact killing removed)
 DIFFUSIVE_KILLING = False
 
+# --------------------------------------------------
+# Diffusive inhibitor parameters (signal 1, species 1)
+# --------------------------------------------------
+# Second molecule produced by PA. It does NOT kill SA, but reduces SA growth.
+INHIBITOR_ON           = True   # toggle for the second molecule
+INHIB_DIFF_RATE        = 50.0   # diffusion coefficient on grid
+INHIB_MEMBRANE_DIFF    = 10.0   # in/out of cell
+INHIB_PROD_RATE_PA     = 1.0    # production rate in PA cells
 
-def toxin_to_color(cell):
+# How strongly inhibitor suppresses SA growth:
+# effective SA growth = SA_MU * crowd_factor * f(inhib_conc)
+# f = max(0, 1 - alpha * inhibitor)
+INHIB_EFFECT_STRENGTH  = 1    # per-unit concentration slope
+
+# --------------------------------------------------
+# Color switches
+# --------------------------------------------------
+# If COLOR_BY_INHIBITOR is True, SA color reflects inhibitor (green → yellow).
+# If COLOR_BY_INHIBITOR is False but COLOR_BY_TOXIN is True, color reflects toxin (fade to white).
+# If both False, use plain species colors.
+COLOR_BY_TOXIN     = False
+COLOR_BY_INHIBITOR = True   # when True, overrides toxin-based coloring
+INHIB_COLOR_REF    = 1/INHIB_EFFECT_STRENGTH     # inhibitor conc at which SA is fully yellow
+
+
+def inhibitor_growth_factor(inh_conc):
     """
-    Return an [R,G,B] color for a cell based on its toxin level.
-    Uses signals[0] (extracellular toxin at cell position).
-    Low toxin: normal species color.
-    High toxin: fades to white.
+    Map extracellular inhibitor concentration to a multiplicative factor
+    on SA growth rate.
+
+    Simple linear inhibition:
+        f = max(0, 1 - alpha * inh_conc)
+
+    where alpha = INHIB_EFFECT_STRENGTH.
     """
-    # Dead cells keep their dead color
-    if cell.cellType == 2:
+    if not INHIBITOR_ON:
+        return 1.0
+    factor = 1.0 - INHIB_EFFECT_STRENGTH * float(inh_conc)
+    return max(0.0, factor)
+
+
+def cell_color(cell):
+    """
+    Return an [R,G,B] color for a cell based on chosen coloring mode.
+    - If dead: gray.
+    - If COLOR_BY_INHIBITOR and SA: green → yellow with extracellular inhibitor.
+    - Else if COLOR_BY_TOXIN: base color → white with extracellular toxin.
+    - Else: species base color.
+    """
+    ctype = cell.cellType
+
+    # Dead stays gray
+    if ctype == 2:
         return COL_DEAD
 
-    # Base color by species
-    if cell.cellType == 0:      # SA
+    # Base species colors
+    if ctype == 0:      # SA
         base = COL_SA
-    elif cell.cellType == 1:    # PA
+    elif ctype == 1:    # PA
         base = COL_PA
     else:
         base = [0.5, 0.5, 0.5]
 
-    if DIFFUSIVE_KILLING:
-        tox = float(cell.signals[0])   # extracellular toxin signal for this cell
-        # Normalize to kill threshold: 0 → no toxin, 1 → at kill threshold
-        norm = min(tox / TOXIN_KILL_THRESHOLD, 1.0)
-        # Blend towards white as toxin increases
+    # 1) Inhibitor-based coloring (SA only), overrides toxin if enabled
+    if COLOR_BY_INHIBITOR and ctype == 0:
+        inh = float(cell.signals[1]) if INHIBITOR_ON else 0.0
+        if INHIB_COLOR_REF > 0:
+            norm = min(inh / INHIB_COLOR_REF, 1.0)
+        else:
+            norm = 0.0
+        # Green → Yellow: [0,1,0] → [1,1,0]
+        r = norm            # from 0 to 1
+        g = 1.0             # always 1
+        b = 0.0
+        return [r, g, b]
+
+    # 2) Toxin-based coloring (both species)
+    if COLOR_BY_TOXIN and DIFFUSIVE_KILLING:
+        tox = float(cell.signals[0])
+        if TOXIN_KILL_THRESHOLD > 0:
+            norm = min(tox / TOXIN_KILL_THRESHOLD, 1.0)
+        else:
+            norm = 0.0
+        # Blend base → white as toxin increases
         r = base[0] * (1.0 - norm) + 1.0 * norm
         g = base[1] * (1.0 - norm) + 1.0 * norm
         b = base[2] * (1.0 - norm) + 1.0 * norm
         return [r, g, b]
-    else:
-        # No diffusive killing: just use base species color
-        return base
+
+    # 3) Default: plain species colors
+    return base
 
 
 # -----------------------------
-# OpenCL reaction kernels for toxin (GridDiffusion + CLCrankNicIntegrator)
+# OpenCL reaction kernels for toxin & inhibitor
 # -----------------------------
-# We have 1 intracellular species (toxin_in) and 1 extracellular signal (toxin).
-# Toxin is produced only in PA (cellType==1), and diffuses between inside/outside.
+# We have:
+#   species[0] = toxin_in
+#   species[1] = inhibitor_in
+#   signals[0] = toxin_out
+#   signals[1] = inhibitor_out
 
 cl_prefix = r'''
-    const float D_tox = %(D_tox).1ff;
-    const float k_tox_PA = %(k_pa).1ff;
+    const float D_tox  = %(D_tox).1ff;
+    const float k_tox  = %(k_tox).1ff;
+    const float D_inh  = %(D_inh).1ff;
+    const float k_inh  = %(k_inh).1ff;
 
-    float toxin_in = species[0];
-    float toxin    = signals[0];
+    float toxin_in     = species[0];
+    float inhibitor_in = species[1];
+    float toxin        = signals[0];
+    float inhibitor    = signals[1];
 ''' % {
     'D_tox': TOXIN_MEMBRANE_DIFF,
-    'k_pa':  TOXIN_PROD_RATE_PA,
+    'k_tox': TOXIN_PROD_RATE_PA,
+    'D_inh': INHIB_MEMBRANE_DIFF,
+    'k_inh': INHIB_PROD_RATE_PA,
 }
 
 def specRateCL():
     """Intracellular reaction rates (for species[]) in OpenCL."""
     global cl_prefix
+    # rates[0] = d(toxin_in)/dt
+    # rates[1] = d(inhibitor_in)/dt
     return cl_prefix + r'''
         if (cellType == 1){
-            // PA: produce toxin + exchange with outside
-            rates[0] = k_tox_PA + D_tox*(toxin - toxin_in)*area/gridVolume;
+            // PA: produce toxin & inhibitor + exchange with outside
+            rates[0] = k_tox + D_tox*(toxin - toxin_in)*area/gridVolume;
+            rates[1] = k_inh + D_inh*(inhibitor - inhibitor_in)*area/gridVolume;
         } else {
-            // SA & others: only exchange toxin with outside
+            // SA & others: only exchange with outside
             rates[0] = D_tox*(toxin - toxin_in)*area/gridVolume;
+            rates[1] = D_inh*(inhibitor - inhibitor_in)*area/gridVolume;
         }
     '''
 
 def sigRateCL():
     """Extracellular reaction rates (for signals[]) in OpenCL."""
     global cl_prefix
+    # rates[0] = d(toxin)/dt
+    # rates[1] = d(inhibitor)/dt
     return cl_prefix + r'''
         // Diffusion on the grid handled by GridDiffusion.
         // Here we only handle exchange with cells.
         rates[0] = -D_tox*(toxin - toxin_in)*area/gridVolume;
+        rates[1] = -D_inh*(inhibitor - inhibitor_in)*area/gridVolume;
     '''
 
 
@@ -141,18 +218,16 @@ def setup(sim):
         gamma=10.0,
     )
 
-    # Regulation (we implement simple growth rules + use CL kernels above)
     regul = ModuleRegulator(sim, sim.moduleName)
 
-    # ---- Signalling: GridDiffusion for diffusive toxin ----
-    # Grid big enough so your colony at ~0,0 (±25) sits well inside.
+    # ---- Signalling: GridDiffusion for toxin + inhibitor ----
     grid_dim  = (40, 40, 8)         # number of grid points in x,y,z
     grid_size = (8.0, 8.0, 8.0)     # spacing between grid points (must be equal)
     grid_orig = (-160., -160., -16.)
-    n_signals = 1                   # just toxin
-    n_species = 1                   # intracellular toxin
+    n_signals = 2                   # toxin + inhibitor
+    n_species = 2                   # intracellular toxin + inhibitor
 
-    diff_rates = [TOXIN_DIFF_RATE]  # diffusion coeff. per signal on grid
+    diff_rates = [TOXIN_DIFF_RATE, INHIB_DIFF_RATE]
 
     sig   = GridDiffusion(sim, n_signals, grid_dim, grid_size, grid_orig, diff_rates)
     integ = CLCrankNicIntegrator(sim, n_signals, n_species, MAX_CELLS, sig)
@@ -182,9 +257,8 @@ def setup(sim):
     # Add renderers
     if sim.is_gui:
         sim.addRenderer(Renderers.GLBacteriumRenderer(sim))
-        sim.addRenderer(Renderers.GLGridRenderer(sig, integ))
+        # sim.addRenderer(Renderers.GLGridRenderer(sig, integ))
 
-    # Pickle snapshots occasionally (change as desired)
     sim.pickleSteps = 100
 
 
@@ -226,6 +300,7 @@ def update(cells):
 
     # ------------------------------------------------------
     # Branch 1: no killing at all, just growth/division
+    # (inhibitor can still slow SA if INHIBITOR_ON is True)
     # ------------------------------------------------------
     if not DIFFUSIVE_KILLING:
         for cid, c in cells.items():
@@ -241,17 +316,20 @@ def update(cells):
                     cells_to_remove.append(cid)
 
             elif ctype == 0:  # SA
-                c.growthRate = SA_MU * crowd_factor
+                inh_out = c.signals[1] if INHIBITOR_ON else 0.0
+                inhib_factor = inhibitor_growth_factor(inh_out)
+                c.growthRate = SA_MU * crowd_factor * inhib_factor
                 c.divideFlag = (c.volume > c.targetVol)
                 c.deadCounter = 0
-                c.color = toxin_to_color(c)
+                c.color = cell_color(c)
 
             elif ctype == 1:  # PA
                 c.growthRate = PA_MU * crowd_factor
                 c.divideFlag = (c.volume > c.targetVol)
                 c.deadCounter = 0
-                # You can also visualize PA toxin with:
-                # c.color = toxin_to_color(c)
+                c.color = COL_PA
+                # Optional: also color PA by toxin field
+                # c.color = cell_color(c)
 
         for cid in cells_to_remove:
             cells.pop(cid, None)
@@ -288,7 +366,7 @@ def update(cells):
         elif ctype == 0:  # SA
             killed = False
 
-            # Diffusive toxin killing using extracellular toxin
+            # 1) Diffusive toxin killing using extracellular toxin
             tox_out = c.signals[0]
             if tox_out >= TOXIN_KILL_THRESHOLD:
                 c.cellType = 2
@@ -298,17 +376,20 @@ def update(cells):
                 c.deadCounter = 0
                 killed = True
 
+            # 2) If still alive, apply inhibitor-dependent growth slowdown
             if not killed:
-                c.growthRate = SA_MU * crowd_factor
+                inh_out = c.signals[1] if INHIBITOR_ON else 0.0
+                inhib_factor = inhibitor_growth_factor(inh_out)
+                c.growthRate = SA_MU * crowd_factor * inhib_factor
                 c.divideFlag = (c.volume > c.targetVol)
-                c.color = toxin_to_color(c)
+                c.color = cell_color(c)
 
         elif ctype == 1:  # PA
             c.growthRate = PA_MU * crowd_factor
             c.divideFlag = (c.volume > c.targetVol)
             c.deadCounter = 0
-            # Optional: color PA by toxin, too:
-            # c.color = toxin_to_color(c)
+            c.color = COL_PA
+            # c.color = cell_color(c)
 
     # Remove dead cells that have aged out
     for cid in cells_to_remove:
@@ -329,7 +410,10 @@ def update(cells):
     if STEP_COUNTER % PRINT_EVERY == 0 and DIFFUSIVE_KILLING:
         max_tox_sa = max(c.species[0] for c in cells.values() if c.cellType == 0)
         max_tox_pa = max(c.species[0] for c in cells.values() if c.cellType == 1)
-        print(f"[step {STEP_COUNTER}] max SA toxin_in = {max_tox_sa:.2f}, max PA toxin_in = {max_tox_pa:.2f}")
+        max_inh_sa = max(c.species[1] for c in cells.values() if c.cellType == 0)
+        max_inh_pa = max(c.species[1] for c in cells.values() if c.cellType == 1)
+        print(f"[step {STEP_COUNTER}] max SA toxin_in = {max_tox_sa:.2f}, max PA toxin_in = {max_tox_pa:.2f}, "
+              f"max SA inhib_in = {max_inh_sa:.2f}, max PA inhib_in = {max_inh_pa:.2f}")
 
 
 def divide(parent, d1, d2):
@@ -348,7 +432,6 @@ def divide(parent, d1, d2):
             d.color = COL_PA
             d.growthRate = PA_MU
             d.targetVol = DIV_LENGTH_MEAN_PA + random.uniform(0.0, 0.5)
-    # if dead somehow divides, we could handle here, but in practice shouldn't
 
     for d in (d1, d2):
         d.divideFlag = False
