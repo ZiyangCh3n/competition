@@ -45,7 +45,7 @@ KILL_RADIUS_SQ = KILL_RADIUS * KILL_RADIUS
 GRID_SIZE = KILL_RADIUS
 
 # Toggle: set to False to disable contact killing
-CONTACT_KILLING = False
+CONTACT_KILLING = True
 PRINT_EVERY = 100   # print every 100 steps (tune as you like)
 STEP_COUNTER = 0
 DEAD_LIFETIME = 20   # number of steps after which a dead cell is removed

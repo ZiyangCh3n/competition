@@ -52,7 +52,7 @@ TOXIN_PROD_RATE_PA     = 1.0   # production rate in PA cells
 TOXIN_KILL_THRESHOLD   = 0.5   # SA dies if extracellular toxin >= this
 
 # Killing toggle (now only diffusive; contact killing removed)
-DIFFUSIVE_KILLING = False
+DIFFUSIVE_KILLING = True
 
 # --------------------------------------------------
 # Diffusive inhibitor parameters (signal 1, species 1)
@@ -257,7 +257,7 @@ def setup(sim):
     # Add renderers
     if sim.is_gui:
         sim.addRenderer(Renderers.GLBacteriumRenderer(sim))
-        # sim.addRenderer(Renderers.GLGridRenderer(sig, integ))
+        sim.addRenderer(Renderers.GLGridRenderer(sig, integ))
 
     sim.pickleSteps = 100
 

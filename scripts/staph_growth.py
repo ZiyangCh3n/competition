@@ -5,7 +5,7 @@ from CellModeller.GUI import Renderers
 import numpy
 import math
 
-max_cells = 2**15
+max_cells = 1000
 
 def setup(sim):
     biophys = CLBacterium(sim, jitter_z=False, max_cells=max_cells)
@@ -18,7 +18,7 @@ def setup(sim):
     if sim.is_gui:
         sim.addRenderer(Renderers.GLBacteriumRenderer(sim))
 
-    sim.pickleSteps = 100
+    sim.pickleSteps = 10
 
 
 def init(cell):
