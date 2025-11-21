@@ -60,9 +60,9 @@ DEAD_LIFETIME = 20 # number of steps after which a dead cell is removed
 # --------------------------------------------------
 # Diffusive toxin parameters (signal 0, species 0)
 # --------------------------------------------------
-TOXIN_DIFF_RATE        = 250.0 # diffusion coefficient on grid (arbitrary)
+TOXIN_DIFF_RATE        = 500.0 # diffusion coefficient on grid (arbitrary)
 TOXIN_MEMBRANE_DIFF    = 10.0 # in/out of cell
-TOXIN_PROD_RATE_PA     = 1.0 # production rate in PA cells
+TOXIN_PROD_RATE_PA     = 5.0 # production rate in PA cells
 TOXIN_KILL_THRESHOLD   = 1.0   # SA dies if extracellular toxin >= this
 
 DIFFUSIVE_KILLING = True
@@ -96,7 +96,7 @@ TOXIN_GROWTH_COST = 0.3
 # --------------------------------------------------
 # Toxin QS: when PA start producing toxin (and also inhibitor).
 QS_ON_TOXIN            = True
-QS_POP_THRESHOLD_TOXIN = 100
+QS_POP_THRESHOLD_TOXIN = 150
 QS_ACTIVE_TOXIN        = False  # becomes True when threshold crossed
 
 # Inhibitor QS: when PA start producing inhibitor.
@@ -178,18 +178,29 @@ def cell_color(cell):
     else:
         base = [0.5, 0.5, 0.5]
 
+    # # Inhibitor-based coloring for SA (after inhibitor QS)
+    # if COLOR_BY_INHIBITOR and ctype == SA_TYPE and QS_ACTIVE_INHIB:
+    #     inh = float(cell.signals[1]) if INHIBITOR_ON else 0.0
+    #     if INHIB_COLOR_REF > 0:
+    #         norm = min(inh / INHIB_COLOR_REF, 1.0)
+    #     else:
+    #         norm = 0.0
+    #     # Green → Yellow: [0,1,0] → [1,1,0]
+    #     r = norm
+    #     g = 1.0
+    #     b = 0.0
+    #     return [r, g, b]
+
     # Inhibitor-based coloring for SA (after inhibitor QS)
     if COLOR_BY_INHIBITOR and ctype == SA_TYPE and QS_ACTIVE_INHIB:
         inh = float(cell.signals[1]) if INHIBITOR_ON else 0.0
-        if INHIB_COLOR_REF > 0:
-            norm = min(inh / INHIB_COLOR_REF, 1.0)
-        else:
-            norm = 0.0
-        # Green → Yellow: [0,1,0] → [1,1,0]
-        r = norm
+        f = inhibitor_growth_factor(inh)  # f in [0,1], same function used for growth
+        # Map growth factor to color: full growth (f=1) = green; fully inhibited (f=0) = yellow
+        r = 1.0 - f
         g = 1.0
         b = 0.0
         return [r, g, b]
+
 
     # Toxin-based coloring (after toxin QS)
     if COLOR_BY_TOXIN and DIFFUSIVE_KILLING and QS_ACTIVE_TOXIN:
@@ -511,7 +522,7 @@ def divide(parent, d1, d2):
 
     if ptype == SA_TYPE:
         for d in (d1, d2):
-            d.color = COL_SA
+            d.color = cell_color(d)
             d.growthRate = SA_MU
             d.targetVol = DIV_LENGTH_MEAN_SA + random.uniform(0.0, 0.15)
     elif ptype in (PA_TYPE_ACTIVE, PA_TYPE_SILENT, PA_TYPE_INHIB_ONLY):
