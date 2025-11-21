@@ -23,11 +23,11 @@ DIV_LENGTH_MEAN_PA = 3.5   # mean target length for division
 DIV_LENGTH_MEAN_SA = 1.0
 DIV_LENGTH_JITTER = 0.6    # random jitter added to target length
 
-MAX_CELLS = 10000
+MAX_CELLS = 2000
 
 # Global crowding (simple logistic-like saturation)
 # Keep capacity equal to your original MAX_CELLS so early dynamics are unchanged
-CARRYING_CAPACITY = MAX_CELLS
+CARRYING_CAPACITY = MAX_CELLS*5
 
 # RGB colors for rendering in GUI
 COL_SA   = [0.0, 1.0, 0.0]  # SA = green
@@ -98,7 +98,7 @@ def setup(sim):
         sim.addRenderer(Renderers.GLBacteriumRenderer(sim))
 
     # Pickle snapshots occasionally (change as desired)
-    sim.pickleSteps = 100
+    sim.pickleSteps = 10
 
 
 def init(cell):

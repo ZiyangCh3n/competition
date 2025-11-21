@@ -29,10 +29,10 @@ DIV_LENGTH_MEAN_PA = 3.5   # mean target length for division
 DIV_LENGTH_MEAN_SA = 1.0
 DIV_LENGTH_JITTER = 0.6    # random jitter added to target length
 
-MAX_CELLS = 10000
+MAX_CELLS = 2000
 
 # Global crowding (simple logistic-like saturation)
-CARRYING_CAPACITY = MAX_CELLS  # use same scale as your max cells
+CARRYING_CAPACITY = MAX_CELLS*5  # use same scale as your max cells
 
 # RGB colors for rendering in GUI
 COL_SA   = [0, 1.0, 0]     # SA = green
@@ -46,10 +46,10 @@ DEAD_LIFETIME = 20    # number of steps after which a dead cell is removed
 # --------------------------------------------------
 # Diffusive toxin parameters (signal 0, species 0)
 # --------------------------------------------------
-TOXIN_DIFF_RATE        = 50.0  # diffusion coefficient on grid (arbitrary)
+TOXIN_DIFF_RATE        = 20.0  # diffusion coefficient on grid (arbitrary)
 TOXIN_MEMBRANE_DIFF    = 10.0  # in/out of cell
 TOXIN_PROD_RATE_PA     = 1.0   # production rate in PA cells
-TOXIN_KILL_THRESHOLD   = 0.5   # SA dies if extracellular toxin >= this
+TOXIN_KILL_THRESHOLD   = 1   # SA dies if extracellular toxin >= this
 
 # Killing toggle (now only diffusive; contact killing removed)
 DIFFUSIVE_KILLING = True
@@ -59,7 +59,7 @@ DIFFUSIVE_KILLING = True
 # --------------------------------------------------
 # Second molecule produced by PA. It does NOT kill SA, but reduces SA growth.
 INHIBITOR_ON           = True   # toggle for the second molecule
-INHIB_DIFF_RATE        = 50.0   # diffusion coefficient on grid
+INHIB_DIFF_RATE        = 150.0   # diffusion coefficient on grid
 INHIB_MEMBRANE_DIFF    = 10.0   # in/out of cell
 INHIB_PROD_RATE_PA     = 1.0    # production rate in PA cells
 
@@ -257,9 +257,9 @@ def setup(sim):
     # Add renderers
     if sim.is_gui:
         sim.addRenderer(Renderers.GLBacteriumRenderer(sim))
-        sim.addRenderer(Renderers.GLGridRenderer(sig, integ))
+        # sim.addRenderer(Renderers.GLGridRenderer(sig, integ))
 
-    sim.pickleSteps = 100
+    sim.pickleSteps = 10
 
 
 def init(cell):
