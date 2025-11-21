@@ -82,6 +82,16 @@ INHIB_PROD_RATE_PA     = 20.0
 INHIB_EFFECT_STRENGTH  = 0.5 # per-unit concentration slope
 
 # --------------------------------------------------
+# Metabolic cost of production (new)
+# --------------------------------------------------
+# Growth penalty for PA when they produce inhibitor and toxin.
+# Silent:          PA_MU * crowd_factor
+# Inhibitor-only:  PA_MU * crowd_factor * (1 - INHIB_GROWTH_COST)
+# Toxin+inhibitor: PA_MU * crowd_factor * (1 - INHIB_GROWTH_COST - TOXIN_GROWTH_COST)
+INHIB_GROWTH_COST = 0.2
+TOXIN_GROWTH_COST = 0.3
+
+# --------------------------------------------------
 # Quorum-sensing-like switches (separate for toxin vs inhibitor)
 # --------------------------------------------------
 # Toxin QS: when PA start producing toxin (and also inhibitor).
@@ -121,11 +131,29 @@ def inhibitor_growth_factor(inh_conc):
     return max(0.0, factor)
 
 
+def pa_growth_factor(ctype):
+    """
+    Metabolic cost of production for PA:
+    - Silent:          no cost
+    - Inhibitor-only:  cost = INHIB_GROWTH_COST
+    - Toxin+inhibitor: cost = INHIB_GROWTH_COST + TOXIN_GROWTH_COST
+    """
+    if ctype == PA_TYPE_SILENT:
+        return 1.0
+    elif ctype == PA_TYPE_INHIB_ONLY:
+        return max(0.0, 1.0 - INHIB_GROWTH_COST)
+    elif ctype == PA_TYPE_ACTIVE:
+        return max(0.0, 1.0 - INHIB_GROWTH_COST - TOXIN_GROWTH_COST)
+    else:
+        return 1.0
+
+
 def cell_color(cell):
     """
     Return an [R,G,B] color for a cell based on chosen coloring mode.
     - Dead: gray.
-    - PA silent or inhibitor-only: blue.
+    - PA silent: blue.
+    - PA inhibitor-only: orange.
     - PA toxin-producing: red.
     - SA can be recolored by inhibitor (green→yellow) or all cells by toxin (→white).
     """
@@ -149,7 +177,6 @@ def cell_color(cell):
 
     else:
         base = [0.5, 0.5, 0.5]
-
 
     # Inhibitor-based coloring for SA (after inhibitor QS)
     if COLOR_BY_INHIBITOR and ctype == SA_TYPE and QS_ACTIVE_INHIB:
@@ -335,7 +362,10 @@ def update(cells):
 
     # Global crowding factor (logistic-like slowdown)
     n_cells = len(cells)
-    n_pa = sum(1 for c in cells.values() if c.cellType in (PA_TYPE_ACTIVE, PA_TYPE_SILENT, PA_TYPE_INHIB_ONLY))
+    n_pa = sum(
+        1 for c in cells.values()
+        if c.cellType in (PA_TYPE_ACTIVE, PA_TYPE_SILENT, PA_TYPE_INHIB_ONLY)
+    )
 
     if CARRYING_CAPACITY > 0:
         crowd_factor = max(0.0, 1.0 - float(n_cells) / CARRYING_CAPACITY)
@@ -381,7 +411,8 @@ def update(cells):
                 c.color = cell_color(c)
 
             elif ctype in (PA_TYPE_ACTIVE, PA_TYPE_SILENT, PA_TYPE_INHIB_ONLY):
-                c.growthRate = PA_MU * crowd_factor
+                pa_factor = pa_growth_factor(ctype)
+                c.growthRate = PA_MU * crowd_factor * pa_factor
                 c.divideFlag = (c.volume > c.targetVol)
                 c.deadCounter = 0
                 c.color = cell_color(c)
@@ -438,7 +469,8 @@ def update(cells):
                 c.color = cell_color(c)
 
         elif ctype in (PA_TYPE_ACTIVE, PA_TYPE_SILENT, PA_TYPE_INHIB_ONLY):
-            c.growthRate = PA_MU * crowd_factor
+            pa_factor = pa_growth_factor(ctype)
+            c.growthRate = PA_MU * crowd_factor * pa_factor
             c.divideFlag = (c.volume > c.targetVol)
             c.deadCounter = 0
             c.color = cell_color(c)
