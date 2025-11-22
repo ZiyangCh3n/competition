@@ -41,7 +41,7 @@ DIV_LENGTH_MEAN_PA = 3.5   # mean target length for division
 DIV_LENGTH_MEAN_SA = 1.0
 DIV_LENGTH_JITTER = 0.6    # random jitter added to target length
 
-MAX_CELLS = 4000
+MAX_CELLS = 2500
 
 # Global crowding (simple logistic-like saturation)
 CARRYING_CAPACITY = MAX_CELLS*5
@@ -60,7 +60,7 @@ DEAD_LIFETIME = 20 # number of steps after which a dead cell is removed
 # --------------------------------------------------
 # Diffusive toxin parameters (signal 0, species 0)
 # --------------------------------------------------
-TOXIN_DIFF_RATE        = 500.0 # diffusion coefficient on grid (arbitrary)
+TOXIN_DIFF_RATE        = 50.0 # diffusion coefficient on grid (arbitrary)
 TOXIN_MEMBRANE_DIFF    = 10.0 # in/out of cell
 TOXIN_PROD_RATE_PA     = 5.0 # production rate in PA cells
 TOXIN_KILL_THRESHOLD   = 1.0   # SA dies if extracellular toxin >= this
@@ -70,11 +70,20 @@ DIFFUSIVE_KILLING = True
 # --------------------------------------------------
 # Diffusive inhibitor parameters (signal 1, species 1)
 # --------------------------------------------------
+
+# --- Inhibitor decay (new) ---
+# Extracellular decay makes the field local (highly recommended)
+INHIBITOR_DECAY_OUT = 0.01    # per-step decay of signals[1] (start 0.005–0.02)
+
+# Optional tiny intracellular decay (usually 0)
+INHIBITOR_DECAY_IN  = 0.0     # per-step decay of species[1] (e.g., 0–0.002)
+
+
 # Second molecule produced by PA. It does NOT kill SA, but reduces SA growth.
 INHIBITOR_ON           = True
-INHIB_DIFF_RATE        = 500.0
-INHIB_MEMBRANE_DIFF    = 10.0
-INHIB_PROD_RATE_PA     = 20.0
+INHIB_DIFF_RATE        = 100.0
+INHIB_MEMBRANE_DIFF    = 40.0
+INHIB_PROD_RATE_PA     = 10.0
 
 # SA growth slowdown:
 # effective SA growth = SA_MU * crowd_factor * f(inhib_conc)
@@ -101,7 +110,7 @@ QS_ACTIVE_TOXIN        = False  # becomes True when threshold crossed
 
 # Inhibitor QS: when PA start producing inhibitor.
 QS_ON_INHIB            = True
-QS_POP_THRESHOLD_INHIB = 50
+QS_POP_THRESHOLD_INHIB = 30
 QS_ACTIVE_INHIB        = False  # becomes True when threshold crossed
 
 # --------------------------------------------------
@@ -234,10 +243,12 @@ def cell_color(cell):
 #   PA_TYPE_INHIB_ONLY = 4
 
 cl_prefix = r'''
-    const float D_tox  = %(D_tox).1ff;
-    const float k_tox  = %(k_tox).1ff;
-    const float D_inh  = %(D_inh).1ff;
-    const float k_inh  = %(k_inh).1ff;
+    const float D_tox   = %(D_tox).6ff;
+    const float k_tox   = %(k_tox).6ff;
+    const float D_inh   = %(D_inh).6ff;
+    const float k_inh   = %(k_inh).6ff;
+    const float dec_inh_out = %(dec_inh_out).6ff;
+    const float dec_inh_in  = %(dec_inh_in).6ff;
 
     float toxin_in     = species[0];
     float inhibitor_in = species[1];
@@ -248,39 +259,39 @@ cl_prefix = r'''
     'k_tox': TOXIN_PROD_RATE_PA,
     'D_inh': INHIB_MEMBRANE_DIFF,
     'k_inh': INHIB_PROD_RATE_PA,
+    'dec_inh_out': INHIBITOR_DECAY_OUT,
+    'dec_inh_in':  INHIBITOR_DECAY_IN,
 }
 
+
 def specRateCL():
-    """Intracellular reaction rates (for species[]) in OpenCL."""
     global cl_prefix
-    # rates[0] = d(toxin_in)/dt
-    # rates[1] = d(inhibitor_in)/dt
     return cl_prefix + r'''
         if (cellType == 1){
             // PA toxin-active: produce toxin + inhibitor + exchange
             rates[0] = k_tox + D_tox*(toxin - toxin_in)*area/gridVolume;
-            rates[1] = k_inh + D_inh*(inhibitor - inhibitor_in)*area/gridVolume;
+            rates[1] = k_inh + D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+                       - dec_inh_in * inhibitor_in;
         } else if (cellType == 4){
             // PA inhibitor-only: produce inhibitor only, toxin just exchanges
             rates[0] = D_tox*(toxin - toxin_in)*area/gridVolume;
-            rates[1] = k_inh + D_inh*(inhibitor - inhibitor_in)*area/gridVolume;
+            rates[1] = k_inh + D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+                       - dec_inh_in * inhibitor_in;
         } else {
-            // SA, DEAD, and SILENT PA: only exchange with outside
+            // SA, DEAD, and SILENT PA: only exchange (+ optional tiny decay)
             rates[0] = D_tox*(toxin - toxin_in)*area/gridVolume;
-            rates[1] = D_inh*(inhibitor - inhibitor_in)*area/gridVolume;
+            rates[1] = D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+                       - dec_inh_in * inhibitor_in;
         }
     '''
 
 def sigRateCL():
-    """Extracellular reaction rates (for signals[]) in OpenCL."""
     global cl_prefix
-    # rates[0] = d(toxin)/dt
-    # rates[1] = d(inhibitor)/dt
     return cl_prefix + r'''
-        // Diffusion on the grid handled by GridDiffusion.
-        // Here we only handle exchange with cells.
+        // Exchange with cells + extracellular decay
         rates[0] = -D_tox*(toxin - toxin_in)*area/gridVolume;
-        rates[1] = -D_inh*(inhibitor - inhibitor_in)*area/gridVolume;
+        rates[1] = -D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+                   - dec_inh_out * inhibitor;
     '''
 
 
@@ -301,8 +312,8 @@ def setup(sim):
     regul = ModuleRegulator(sim, sim.moduleName)
 
     # ---- Signalling: GridDiffusion for toxin + inhibitor ----
-    grid_dim  = (40, 40, 8) # number of grid points in x,y,z
-    grid_size = (8.0, 8.0, 8.0) # spacing between grid points (must be equal)
+    grid_dim  = (80, 80, 8) # number of grid points in x,y,z
+    grid_size = (4.0, 4.0, 4.0) # spacing between grid points (must be equal)
     grid_orig = (-160., -160., -16.)
     n_signals = 2 # toxin + inhibitor
     n_species = 2 # intracellular toxin + inhibitor
@@ -511,6 +522,13 @@ def update(cells):
                          if c.cellType in (PA_TYPE_ACTIVE, PA_TYPE_SILENT, PA_TYPE_INHIB_ONLY))
         print(f"[step {STEP_COUNTER}] max SA toxin_in = {max_tox_sa:.2f}, max PA toxin_in = {max_tox_pa:.2f}, "
               f"max SA inhib_in = {max_inh_sa:.2f}, max PA inhib_in = {max_inh_pa:.2f}")
+        diffs = []
+        for c in cells.values():
+            if c.cellType in (PA_TYPE_ACTIVE, PA_TYPE_INHIB_ONLY, SA_TYPE):
+                diffs.append(abs(float(c.species[1]) - float(c.signals[1])))
+        if diffs:
+            print(f"[step {STEP_COUNTER}] mean |in-inh - out-inh| = {np.mean(diffs):.3g} (should be ~0 when exchange is fast)")
+
 
 
 def divide(parent, d1, d2):
