@@ -264,34 +264,82 @@ cl_prefix = r'''
 }
 
 
+# def specRateCL():
+#     global cl_prefix
+#     return cl_prefix + r'''
+#         if (cellType == 1){
+#             // PA toxin-active: produce toxin + inhibitor + exchange
+#             rates[0] = k_tox + D_tox*(toxin - toxin_in)*area/gridVolume;
+#             rates[1] = k_inh + D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+#                        - dec_inh_in * inhibitor_in;
+#         } else if (cellType == 4){
+#             // PA inhibitor-only: produce inhibitor only, toxin just exchanges
+#             rates[0] = D_tox*(toxin - toxin_in)*area/gridVolume;
+#             rates[1] = k_inh + D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+#                        - dec_inh_in * inhibitor_in;
+#         } else {
+#             // SA, DEAD, and SILENT PA: only exchange (+ optional tiny decay)
+#             rates[0] = D_tox*(toxin - toxin_in)*area/gridVolume;
+#             rates[1] = D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+#                        - dec_inh_in * inhibitor_in;
+#         }
+#     '''
+
+# def sigRateCL():
+#     global cl_prefix
+#     return cl_prefix + r'''
+#         // Exchange with cells + extracellular decay
+#         rates[0] = -D_tox*(toxin - toxin_in)*area/gridVolume;
+#         rates[1] = -D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+#                    - dec_inh_out * inhibitor;
+#     '''
+
+
+# Move inhibitor production to extracellular field to remove membrane bottleneck
+    
 def specRateCL():
     global cl_prefix
     return cl_prefix + r'''
+        // Intracellular dynamics:
+        // - NO inhibitor production inside (avoids membrane bottleneck)
+        // - Only exchange + optional intracellular decay
+
         if (cellType == 1){
-            // PA toxin-active: produce toxin + inhibitor + exchange
+            // PA toxin-active
             rates[0] = k_tox + D_tox*(toxin - toxin_in)*area/gridVolume;
-            rates[1] = k_inh + D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+            rates[1] = D_inh*(inhibitor - inhibitor_in)*area/gridVolume
                        - dec_inh_in * inhibitor_in;
         } else if (cellType == 4){
-            // PA inhibitor-only: produce inhibitor only, toxin just exchanges
+            // PA inhibitor-only
             rates[0] = D_tox*(toxin - toxin_in)*area/gridVolume;
-            rates[1] = k_inh + D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+            rates[1] = D_inh*(inhibitor - inhibitor_in)*area/gridVolume
                        - dec_inh_in * inhibitor_in;
         } else {
-            // SA, DEAD, and SILENT PA: only exchange (+ optional tiny decay)
+            // SA, DEAD, and SILENT PA
             rates[0] = D_tox*(toxin - toxin_in)*area/gridVolume;
             rates[1] = D_inh*(inhibitor - inhibitor_in)*area/gridVolume
                        - dec_inh_in * inhibitor_in;
         }
     '''
-
+    
 def sigRateCL():
     global cl_prefix
     return cl_prefix + r'''
-        // Exchange with cells + extracellular decay
+        // Extracellular dynamics:
+        // - Exchange with cells
+        // - Extracellular decay
+        // - PA production goes DIRECTLY to the outside (cellType 1 or 4)
+
         rates[0] = -D_tox*(toxin - toxin_in)*area/gridVolume;
-        rates[1] = -D_inh*(inhibitor - inhibitor_in)*area/gridVolume
-                   - dec_inh_out * inhibitor;
+
+        // Base exchange + decay for inhibitor
+        float base_inh = -D_inh*(inhibitor - inhibitor_in)*area/gridVolume
+                         - dec_inh_out * inhibitor;
+
+        // Direct secretion to outside for PA (active or inhib-only)
+        float secre = ( (cellType == 1 || cellType == 4) ? k_inh : 0.0f );
+
+        rates[1] = base_inh + secre;
     '''
 
 
