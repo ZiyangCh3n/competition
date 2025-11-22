@@ -60,20 +60,20 @@ DEAD_LIFETIME = 20   # steps after which a dead cell is removed
 # --------------------------------------------------
 # Extracellular toxin (signal 0)
 # --------------------------------------------------
-TOXIN_DIFF_RATE     = 50.0     # grid diffusion
-TOXIN_PROD_RATE_PA  = 5.0      # PA_ACTIVE secretes outside
-TOXIN_DECAY_OUT     = 0.00     # optional extracellular decay (0–0.02)
-TOXIN_KILL_THRESHOLD= 1.0      # SA dies if extracellular toxin >= this
+TOXIN_DIFF_RATE      = 50.0     # grid diffusion
+TOXIN_PROD_RATE_PA   = 5.0      # PA_ACTIVE secretes outside
+TOXIN_DECAY_OUT      = 0.00     # optional extracellular decay (0–0.02)
+TOXIN_KILL_THRESHOLD = 1.0      # SA dies if extracellular toxin >= this
 
 DIFFUSIVE_KILLING = True
 
 # --------------------------------------------------
 # Extracellular inhibitor (signal 1)
 # --------------------------------------------------
-INHIBITOR_ON          = True
-INHIB_DIFF_RATE       = 100.0   # grid diffusion
-INHIB_PROD_RATE_PA    = 10.0    # PA_ACTIVE & PA_INHIB_ONLY secrete outside
-INHIBITOR_DECAY_OUT   = 0.01    # extracellular decay (0.005–0.02 recommended)
+INHIBITOR_ON         = True
+INHIB_DIFF_RATE      = 100.0   # grid diffusion
+INHIB_PROD_RATE_PA   = 10.0    # PA_ACTIVE & PA_INHIB_ONLY secrete outside
+INHIBITOR_DECAY_OUT  = 0.01    # extracellular decay (0.005–0.02 recommended)
 
 # SA growth slowdown:
 # effective SA growth = SA_MU * crowd_factor * f(inhib_conc)
@@ -89,6 +89,7 @@ TOXIN_GROWTH_COST = 0.3
 # --------------------------------------------------
 # Quorum-sensing-like switches (separate for toxin vs inhibitor)
 # --------------------------------------------------
+# NOTE: QS still gates PRODUCTION, but NOT the SA response (effect).
 QS_ON_TOXIN            = True
 QS_POP_THRESHOLD_TOXIN = 150
 QS_ACTIVE_TOXIN        = False  # becomes True when threshold crossed
@@ -103,15 +104,20 @@ QS_ACTIVE_INHIB        = False  # becomes True when threshold crossed
 # If COLOR_BY_INHIBITOR is True, SA color reflects growth effect (green → yellow).
 COLOR_BY_TOXIN     = False
 COLOR_BY_INHIBITOR = True
-INHIB_COLOR_REF    = 1/INHIB_EFFECT_STRENGTH  # (unused now; we color by effect)
 
+# -----------------------------
+# Effect functions
+# -----------------------------
 def inhibitor_growth_factor(inh_conc):
     """
     Map extracellular inhibitor concentration to a multiplicative factor
     on SA growth rate: f = max(0, 1 - alpha * inh_conc)
-    Only active if INHIBITOR_ON and inhibitor QS is active.
+
+    IMPORTANT CHANGE:
+    - We NO LONGER gate the effect by QS_ACTIVE_INHIB.
+      SA always respond to the actual inhibitor concentration.
     """
-    if not INHIBITOR_ON or not QS_ACTIVE_INHIB:
+    if not INHIBITOR_ON:
         return 1.0
     factor = 1.0 - INHIB_EFFECT_STRENGTH * float(inh_conc)
     return max(0.0, factor)
@@ -154,7 +160,7 @@ def cell_color(cell):
         base = [0.5, 0.5, 0.5]
 
     # SA coloring by *growth effect* from inhibitor (matches phenotype)
-    if COLOR_BY_INHIBITOR and ctype == SA_TYPE and QS_ACTIVE_INHIB:
+    if COLOR_BY_INHIBITOR and ctype == SA_TYPE:
         inh = float(cell.signals[1]) if INHIBITOR_ON else 0.0
         f = inhibitor_growth_factor(inh)  # 1→green, 0→yellow
         r = 1.0 - f
@@ -179,7 +185,7 @@ def cell_color(cell):
 # signals[0] = toxin_out
 # signals[1] = inhibitor_out
 #
-# IMPORTANT: cellType mapping in CL:
+# cellType mapping:
 #   SA_TYPE            = 0
 #   PA_TYPE_ACTIVE     = 1
 #   DEAD_TYPE          = 2
@@ -187,13 +193,13 @@ def cell_color(cell):
 #   PA_TYPE_INHIB_ONLY = 4
 #
 # Diffusion on the grid is handled by GridDiffusion; here we only add
-# extracellular decay and cell-driven secretion (no intracellular species).
+# extracellular decay and PA secretion (no intracellular species).
 
 cl_prefix = r'''
-    const float k_tox      = %(k_tox).6ff;
-    const float k_inh      = %(k_inh).6ff;
-    const float dec_tox    = %(dec_tox).6ff;
-    const float dec_inh    = %(dec_inh).6ff;
+    const float k_tox   = %(k_tox).6ff;
+    const float k_inh   = %(k_inh).6ff;
+    const float dec_tox = %(dec_tox).6ff;
+    const float dec_inh = %(dec_inh).6ff;
 
     float toxin     = signals[0];
     float inhibitor = signals[1];
@@ -208,15 +214,14 @@ def specRateCL():
     """No intracellular species: return a do-nothing kernel body."""
     global cl_prefix
     return cl_prefix + r'''
-        // No intracellular pools; nothing to do here.
-        // (n_species == 0)
+        // No intracellular pools; nothing to do here. (n_species == 0)
     '''
 
 def sigRateCL():
     """Extracellular reactions: decay + PA secretion (no membrane exchange)."""
     global cl_prefix
     return cl_prefix + r'''
-        // Base decay for both signals
+        // Base decay
         float r_tox = - dec_tox * toxin;
         float r_inh = - dec_inh * inhibitor;
 
@@ -251,8 +256,8 @@ def setup(sim):
     regul = ModuleRegulator(sim, sim.moduleName)
 
     # ---- Signalling: GridDiffusion for toxin + inhibitor ----
-    grid_dim  = (80, 80, 8)      # number of grid points in x,y,z
-    grid_size = (4.0, 4.0, 4.0)  # spacing between grid points (must be equal)
+    grid_dim  = (80, 80, 8)      # voxels in x,y,z
+    grid_size = (4.0, 4.0, 4.0)  # micron spacing (equal in x,y,z)
     grid_orig = (-160., -160., -16.)
     n_signals = 2                # toxin + inhibitor
     n_species = 0                # *** no intracellular species ***
@@ -263,7 +268,7 @@ def setup(sim):
     sig   = GridDiffusion(sim, n_signals, grid_dim, grid_size, grid_orig, diff_rates)
     integ = CLCrankNicIntegrator(sim, n_signals, n_species, MAX_CELLS, sig)
 
-    # Optional: smaller dt to be super safe/stable
+    # Optional: smaller dt if you crank rates; default is usually ~0.02
     # sim.dt = 0.01
 
     sim.init(biophys, regul, sig, integ)
@@ -326,7 +331,6 @@ def update(cells):
         1 for c in cells.values()
         if c.cellType in (PA_TYPE_ACTIVE, PA_TYPE_SILENT, PA_TYPE_INHIB_ONLY)
     )
-
     crowd_factor = max(0.0, 1.0 - float(n_cells) / CARRYING_CAPACITY) if CARRYING_CAPACITY > 0 else 1.0
 
     # ----- QS activation of PRODUCTION via PA state switches -----
